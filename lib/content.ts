@@ -14,7 +14,7 @@ export type ContactMessage = {
 
 export const MEDIA_KEY = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.(jpg|png|webp)$/;
 const imageUrl = z.string().max(2000).refine((value) => {
-  if (value === "") return true;
+  if (value === "" || value.startsWith("/images/")) return true;
   try {
     const url = new URL(value);
     return url.protocol === "https:" && url.hostname === "firebasestorage.googleapis.com";

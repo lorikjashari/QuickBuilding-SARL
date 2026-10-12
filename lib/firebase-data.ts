@@ -5,6 +5,7 @@ import {
   CATEGORIES, createPostSchema, detectImage, MAX_UPLOAD_BYTES, slugify, validatePublication,
   type ContactMessage, type Post, type PostCategory,
 } from "@/lib/content";
+import { companyPosts } from "@/lib/company-posts";
 import { database, mediaStorage } from "@/lib/firebase";
 
 type PostFields = {
@@ -69,22 +70,41 @@ async function postsQuery(status?: "published") {
   return snapshot.results.flatMap((result) => result.id ? [asPost(result.id, result.data() as Record<string, unknown>)] : []);
 }
 
+function withCompanyPosts(posts: Post[]): Post[] {
+  const slugs = new Set(posts.map((post) => post.slug));
+  return [...posts, ...companyPosts.filter((post) => !slugs.has(post.slug))].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
 export async function listPublishedPosts(): Promise<Post[]> {
-  return postsQuery("published");
+  try {
+    return withCompanyPosts(await postsQuery("published"));
+  } catch {
+    return companyPosts;
+  }
 }
 
 export async function listAllPosts(): Promise<Post[]> {
-  return postsQuery();
+  try {
+    return withCompanyPosts(await postsQuery());
+  } catch {
+    return companyPosts;
+  }
 }
 
 export async function getPublishedPost(slug: string): Promise<Post | null> {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 160) return null;
-  const snapshot = await execute(database().pipeline().collection("posts").where(and(
-    equal(field("slug"), slug),
-    equal(field("status"), "published"),
-  )).limit(1));
-  const result = snapshot.results[0];
-  return result?.id ? asPost(result.id, result.data() as Record<string, unknown>) : null;
+  const local = companyPosts.find((post) => post.slug === slug) ?? null;
+  try {
+    const snapshot = await execute(database().pipeline().collection("posts").where(and(
+      equal(field("slug"), slug),
+      equal(field("status"), "published"),
+    )).limit(1));
+    const result = snapshot.results[0];
+    if (result?.id) return asPost(result.id, result.data() as Record<string, unknown>);
+  } catch {
+    return local;
+  }
+  return local;
 }
 
 async function postWithSlug(slug: string): Promise<Post | null> {

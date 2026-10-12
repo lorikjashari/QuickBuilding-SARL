@@ -59,7 +59,7 @@ service cloud.firestore {
     function validImage(value) {
       return value is string
         && value.size() <= 2000
-        && (value.size() == 0 || value.matches("^https://.*"));
+        && (value.size() == 0 || value.matches("^https://.*") || value.matches("^/images/.*"));
     }
 
     function isValidPost(data) {
