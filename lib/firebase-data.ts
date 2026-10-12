@@ -1,8 +1,8 @@
 import { deleteDoc, doc, getDoc, setDoc, Timestamp, updateDoc } from "firebase/firestore";
 import { and, equal, execute, field } from "firebase/firestore/pipelines";
-import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
+import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import {
-  CATEGORIES, createPostSchema, detectImage, MAX_UPLOAD_BYTES, slugify, validatePublication,
+  CATEGORIES, createPostSchema, detectImage, MAX_UPLOAD_BYTES, MAX_UPLOAD_MB, slugify, validatePublication,
   type ContactMessage, type Post, type PostCategory,
 } from "@/lib/content";
 import { companyPosts } from "@/lib/company-posts";
@@ -165,13 +165,16 @@ export async function removePost(id: string): Promise<void> {
 }
 
 export async function uploadImage(file: File): Promise<string> {
-  if (file.size > MAX_UPLOAD_BYTES) throw new Error("Chaque image doit peser moins de 8 Mo.");
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const image = detectImage(bytes);
+  if (file.size > MAX_UPLOAD_BYTES) throw new Error(`Chaque image doit peser moins de ${MAX_UPLOAD_MB} Mo.`);
+  const header = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+  const image = detectImage(header);
   if (!image) throw new Error("Choisissez des images au format JPG, PNG ou WebP.");
   const key = `${crypto.randomUUID()}.${image.extension}`;
   const stored = ref(mediaStorage(), `media/${key}`);
-  await uploadBytes(stored, bytes, { contentType: image.mime });
+  await new Promise<void>((resolve, reject) => {
+    const task = uploadBytesResumable(stored, file, { contentType: image.mime });
+    task.on("state_changed", () => undefined, reject, () => resolve());
+  });
   return getDownloadURL(stored);
 }
 
