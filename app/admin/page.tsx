@@ -2,8 +2,12 @@
 
 /* eslint-disable @next/next/no-img-element -- Uploaded images are served directly from the media API without an image optimization service. */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { ADMIN_EMAIL, ADMIN_LOGIN } from "@/lib/firebase-config";
+import { listAllPosts, listContactMessages, markContactRead, removeContactMessage, removePost, savePost as storePost, uploadImage } from "@/lib/firebase-data";
+import { firebaseApp } from "@/lib/firebase";
 import {
   ArrowDownLeft, ArrowLeft, ArrowRight, ArrowUpRight, CheckCircle2,
   ChevronRight, CircleHelp, Eye, FileText, ImagePlus, Inbox, LayoutDashboard,
@@ -26,12 +30,17 @@ const blankPost = (): Post => ({ id: "", title: "", slug: "", excerpt: "", conte
 const date = (value: string) => value ? new Intl.DateTimeFormat("fr-CH", { day: "numeric", month: "short", year: "numeric" }).format(new Date(value)) : "À l’instant";
 const slugify = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
-async function api<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, { credentials: "same-origin", ...options });
-  let body: T & { error?: string };
-  try { body = await response.json(); } catch { throw new Error("Le serveur est momentanément indisponible. Veuillez réessayer."); }
-  if (!response.ok) throw new Error(body.error || "Impossible de terminer cette action. Veuillez réessayer.");
-  return body;
+function auth() { return getAuth(firebaseApp()); }
+function loginEmail(value: string) {
+  const login = value.trim().toLowerCase();
+  return login === ADMIN_LOGIN ? ADMIN_EMAIL : login;
+}
+function authMessage(error: unknown) {
+  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+  if (code === "auth/invalid-credential" || code === "auth/user-not-found" || code === "auth/wrong-password" || code === "auth/invalid-email") return "Identifiant ou mot de passe incorrect.";
+  if (code === "auth/too-many-requests") return "Trop de tentatives. Réessayez dans quelques minutes.";
+  if (error instanceof Error && error.message) return error.message;
+  return "La connexion a échoué. Réessayez.";
 }
 
 function Brand({ light = false }: { light?: boolean }) {
@@ -64,6 +73,9 @@ function Modal({ children, label, onClose, wide = false }: { children: React.Rea
 export default function AdminPage() {
   const [session, setSession] = useState<Session | null>(null);
   const [sessionError, setSessionError] = useState("");
+  const [login, setLogin] = useState("");
+  const [password, setPassword] = useState("");
+  const [signingIn, setSigningIn] = useState(false);
   const [posts, setPosts] = useState<Post[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -92,10 +104,10 @@ export default function AdminPage() {
   const loadContent = useCallback(async () => {
     setLoading(true); setError("");
     const [postResult, messageResult] = await Promise.allSettled([
-      api<{ posts: Post[] }>("/api/posts?admin=1"), api<{ messages: Message[] }>("/api/contact"),
+      listAllPosts(), listContactMessages(),
     ]);
-    if (postResult.status === "fulfilled") setPosts(postResult.value.posts);
-    if (messageResult.status === "fulfilled") setMessages(messageResult.value.messages);
+    if (postResult.status === "fulfilled") setPosts(postResult.value);
+    if (messageResult.status === "fulfilled") setMessages(messageResult.value);
     const failure = [postResult, messageResult].find(result => result.status === "rejected");
     if (failure?.status === "rejected") setError(failure.reason instanceof Error ? failure.reason.message : "Impossible de charger les données.");
     setLoading(false);
@@ -103,13 +115,34 @@ export default function AdminPage() {
 
   useEffect(() => {
     let active = true;
-    api<Session>("/api/session").then(result => {
-      if (!active) return;
-      setSession(result);
-      if (result.isAdmin) void loadContent(); else setLoading(false);
-    }).catch(reason => { if (active) { setSessionError(reason.message); setLoading(false); } });
-    return () => { active = false; };
+    let unsubscribe = () => {};
+    try {
+      unsubscribe = onAuthStateChanged(getAuth(firebaseApp()), user => {
+        if (!active) return;
+        const email = user?.email?.toLowerCase() || "";
+        const next = { user: user ? { userId: user.uid, displayName: user.displayName || "Administrateur", email } : null, isAdmin: email === ADMIN_EMAIL };
+        setSession(next);
+        if (next.isAdmin) void loadContent(); else setLoading(false);
+      });
+    } catch (reason) {
+      setSessionError(reason instanceof Error ? reason.message : "Firebase n’est pas encore configuré.");
+      setLoading(false);
+    }
+    return () => { active = false; unsubscribe(); };
   }, [loadContent]);
+
+  const openAdmin = async (event: FormEvent) => {
+    event.preventDefault();
+    setSessionError(""); setSigningIn(true);
+    try { await signInWithEmailAndPassword(auth(), loginEmail(login), password); }
+    catch (reason) { setSessionError(authMessage(reason)); }
+    finally { setSigningIn(false); }
+  };
+
+  const leaveAdmin = async () => {
+    if (dirty && !window.confirm("Quitter sans enregistrer les modifications ?")) return;
+    await signOut(auth());
+  };
 
   useEffect(() => {
     if (!dirty && !uploading && !busy) return;
@@ -141,9 +174,9 @@ export default function AdminPage() {
     setBusy(true);
     try {
       const payload = { title: draft.title.trim(), slug: slugify(draft.slug || draft.title), excerpt: draft.excerpt, content: draft.content, category: draft.category, status: nextStatus, image: draft.image, imageAlt: draft.imageAlt, gallery: draft.gallery, location: draft.location };
-      const result = await api<{ post: Post }>(draft.id ? `/api/posts/${draft.id}` : "/api/posts", { method: draft.id ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      setPosts(current => [result.post, ...current.filter(post => post.id !== result.post.id)]);
-      setDraft(result.post); setOriginal(JSON.stringify(result.post));
+      const result = await storePost(payload, draft.id);
+      setPosts(current => [result, ...current.filter(post => post.id !== result.id)]);
+      setDraft(result); setOriginal(JSON.stringify(result));
       setNotice(nextStatus === "published" ? "Votre publication est en ligne." : "Votre brouillon est enregistré.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "L’enregistrement a échoué. Votre texte est conservé."); }
     finally { setBusy(false); }
@@ -159,8 +192,7 @@ export default function AdminPage() {
     setUploading(true);
     try {
       for (const file of selected) {
-        const body = new FormData(); body.append("file", file);
-        const { url } = await api<{ url: string }>("/api/upload", { method: "POST", body });
+        const url = await uploadImage(file);
         setDraft(current => gallery ? { ...current, gallery: [...current.gallery, { url, alt: "" }] } : { ...current, image: url, imageAlt: "" });
       }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Le transfert de l’image a échoué."); }
@@ -171,7 +203,7 @@ export default function AdminPage() {
     if (!deleting) return;
     setBusy(true); setError("");
     try {
-      await api(`/api/posts/${deleting.id}`, { method: "DELETE" });
+      await removePost(deleting.id);
       setPosts(current => current.filter(post => post.id !== deleting.id));
       setDeleting(null); setNotice("La publication a été supprimée.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "La suppression a échoué."); setDeleting(null); }
@@ -183,7 +215,7 @@ export default function AdminPage() {
     setSelectedMessage(message);
     if (message.read) return;
     try {
-      await api(`/api/contact/${message.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ read: true }) });
+      await markContactRead(message.id);
       setMessages(current => current.map(item => item.id === message.id ? { ...item, read: true } : item));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Impossible de marquer le message comme lu."); }
   };
@@ -192,7 +224,7 @@ export default function AdminPage() {
     if (!selectedMessage) return;
     setBusy(true); setError("");
     try {
-      await api(`/api/contact/${selectedMessage.id}`, { method: "DELETE" });
+      await removeContactMessage(selectedMessage.id);
       setMessages(current => current.filter(message => message.id !== selectedMessage.id));
       setSelectedMessage(null); setDeleteMessageConfirm(false); setNotice("La demande a été supprimée.");
     } catch (reason) {
@@ -209,7 +241,7 @@ export default function AdminPage() {
   if (!session?.isAdmin) return <main className="admin-gate">
     <div className="admin-gate-art"><Link href="/" aria-label="Quickbuilding, accueil"><Brand light /></Link><div className="admin-gate-lines" aria-hidden="true"><span /><span /><span /><i /></div><div className="admin-gate-statement"><span className="admin-eyebrow">VOTRE SAVOIR-FAIRE, MIS EN LUMIÈRE.</span><h1>De beaux projets.<br />Une belle vitrine.</h1><p>Un espace pour partager ce que vous construisez.</p></div><span className="admin-gate-region">QUICK BUILDING SÀRL · GENÈVE</span></div>
     <div className="admin-gate-content"><Link className="admin-back" href="/"><ArrowLeft size={16} /> Retour au site</Link><div className="admin-gate-card"><span className="admin-gate-icon"><ShieldCheck size={27} strokeWidth={1.4} /></span><span className="admin-eyebrow">ESPACE PRIVÉ</span><h2>{session?.user ? "Votre espace d’administration" : "Bienvenue chez vous."}</h2>
-      {loading ? <p className="admin-loading"><LoaderCircle className="admin-spin" size={18} /> Vérification de votre accès…</p> : sessionError ? <><p className="admin-error" role="alert">{sessionError}</p><button className="admin-btn admin-btn-primary" onClick={() => window.location.reload()}><RefreshCw size={16} /> Réessayer</button></> : session?.user ? <><p>Vous êtes connecté avec <strong>{session.user.email || session.user.displayName}</strong>. Ce compte n’a pas encore accès à l’administration.</p><div className="admin-access-note"><CircleHelp size={20} /><span>Demandez au responsable du site d’autoriser votre compte pour gérer les publications et les demandes.</span></div><a className="admin-btn admin-btn-secondary" href="/signout-with-chatgpt?return_to=%2Fadmin" target="_top">Changer de compte <ArrowRight size={17} /></a></> : <><p>Vos réalisations, vos actualités et vos demandes de contact. Tout est ici, simplement.</p><a className="admin-btn admin-btn-primary admin-gate-login" href="/signin-with-chatgpt?return_to=%2Fadmin" target="_top">Se connecter avec ChatGPT <ArrowRight size={18} /></a><p className="admin-gate-secure"><ShieldCheck size={14} /> Accès réservé aux administrateurs autorisés.</p></>}
+      {loading ? <p className="admin-loading"><LoaderCircle className="admin-spin" size={18} /> Vérification de votre accès…</p> : session?.user ? <><p>Vous êtes connecté avec <strong>{session.user.email || session.user.displayName}</strong>. Ce compte n’a pas accès à l’administration.</p><button className="admin-btn admin-btn-secondary" onClick={() => void signOut(auth())}>Changer de compte <ArrowRight size={17} /></button></> : <><p>Vos réalisations, vos actualités et vos demandes de contact. Tout est ici, simplement.</p><form className="admin-gate-form" onSubmit={event => void openAdmin(event)}><label className="admin-field">Identifiant<input value={login} onChange={event => setLogin(event.target.value)} autoComplete="username" required /></label><label className="admin-field">Mot de passe<input value={password} onChange={event => setPassword(event.target.value)} type="password" autoComplete="current-password" required /></label>{sessionError && <p className="admin-error" role="alert">{sessionError}</p>}<button className="admin-btn admin-btn-primary admin-gate-login" disabled={signingIn} type="submit">{signingIn ? <LoaderCircle className="admin-spin" size={18} /> : null}Ouvrir l’espace <ArrowRight size={18} /></button></form><p className="admin-gate-secure"><ShieldCheck size={14} /> Accès réservé à l’administrateur.</p></>}
     </div><span className="admin-gate-bottom">Un espace pensé pour faire vivre votre entreprise.</span></div>
   </main>;
 
@@ -219,7 +251,7 @@ export default function AdminPage() {
       <button className={section === "overview" ? "active" : ""} onClick={() => navigate("overview")}><LayoutDashboard size={18} /> Vue d’ensemble</button>
       <button className={["posts", "editor"].includes(section) ? "active" : ""} onClick={() => navigate("posts")}><FileText size={18} /> Publications <span>{posts.length}</span></button>
       <button className={section === "inbox" ? "active" : ""} onClick={() => navigate("inbox")}><Inbox size={18} /> Demandes {unread > 0 && <span className="admin-nav-count">{unread}</span>}</button>
-    </nav><div className="admin-sidebar-note"><span className="admin-note-dot" /><strong>Votre site, vivant.</strong><p>Chaque projet mérite<br />d’être partagé.</p><button onClick={() => editPost()}>Raconter un projet <ArrowUpRight size={16} /></button></div><div className="admin-sidebar-bottom"><a href="/" target="_blank" rel="noreferrer">Voir le site <ArrowUpRight size={16} /></a><div className="admin-profile"><span>{(session.user?.displayName || "Q").slice(0, 1).toUpperCase()}</span><div><strong>{session.user?.displayName || "Administrateur"}</strong><small>Administrateur</small></div><a href="/signout-with-chatgpt?return_to=%2F" target="_top" title="Se déconnecter" aria-label="Se déconnecter" onClick={event => { if (dirty && !window.confirm("Quitter sans enregistrer les modifications ?")) event.preventDefault(); }}><LogOut size={17} /></a></div></div></aside>
+    </nav><div className="admin-sidebar-note"><span className="admin-note-dot" /><strong>Votre site, vivant.</strong><p>Chaque projet mérite<br />d’être partagé.</p><button onClick={() => editPost()}>Raconter un projet <ArrowUpRight size={16} /></button></div><div className="admin-sidebar-bottom"><a href="/" target="_blank" rel="noreferrer">Voir le site <ArrowUpRight size={16} /></a><div className="admin-profile"><span>{(session.user?.displayName || "Q").slice(0, 1).toUpperCase()}</span><div><strong>{session.user?.displayName || "Administrateur"}</strong><small>Administrateur</small></div><button type="button" title="Se déconnecter" aria-label="Se déconnecter" onClick={() => void leaveAdmin()}><LogOut size={17} /></button></div></div></aside>
     <div className="admin-workspace"><header className="admin-topbar"><div><button className="admin-mobile-menu admin-icon-btn" aria-label="Ouvrir le menu" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(true)}><Menu size={21} /></button><span>Administration</span><ChevronRight size={13} /><strong>{{ overview: "Vue d’ensemble", posts: "Publications", inbox: "Demandes", editor: draft.id ? "Modifier une publication" : "Nouvelle publication" }[section]}</strong></div><a href="/" target="_blank" rel="noreferrer">Quickbuilding.ch <ArrowUpRight size={14} /></a></header>
     <main className="admin-main">
       {error && <div className="admin-feedback admin-feedback-error" role="alert"><CircleHelp size={18} /><span>{error}</span><button aria-label="Fermer le message" onClick={() => setError("")}><X size={17} /></button></div>}

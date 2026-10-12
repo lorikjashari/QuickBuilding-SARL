@@ -34,7 +34,9 @@
 .admin-profile>div{min-width:0;flex:1}
 .admin-profile strong{display:block;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .admin-profile small{font-size:10px;color:#8d8d8d}
-.admin-profile>a{color:#838383;padding:7px}
+.admin-profile>a,.admin-profile>button{color:#838383;padding:7px;background:none;border:0;cursor:pointer}
+.admin-gate-form{margin-top:28px}
+.admin-gate-form .admin-field input{font-size:16px}
 .admin-workspace{margin-left:248px;min-width:0}
 .admin-topbar{height:76px;border-bottom:1px solid var(--admin-line);display:flex;align-items:center;justify-content:space-between;padding:0 43px;font-size:11px;background:#faf9f5}
 .admin-topbar>div{display:flex;align-items:center;gap:14px;color:#8f8f8f}

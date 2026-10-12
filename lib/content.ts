@@ -13,7 +13,13 @@ export type ContactMessage = {
 };
 
 export const MEDIA_KEY = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.(jpg|png|webp)$/;
-const imageUrl = z.string().max(200).refine((value) => value === "" || (value.startsWith("/api/media/") && MEDIA_KEY.test(value.slice(11))), "L’image doit provenir de la médiathèque.");
+const imageUrl = z.string().max(2000).refine((value) => {
+  if (value === "") return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "firebasestorage.googleapis.com";
+  } catch { return false; }
+}, "L’image doit provenir de la médiathèque.");
 const fields = {
   title: z.string().trim().min(3, "Le titre doit contenir au moins 3 caractères.").max(150),
   slug: z.string().trim().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Utilisez des lettres minuscules, des chiffres et des tirets pour l’adresse.").max(160),
@@ -21,7 +27,7 @@ const fields = {
   category: z.enum(CATEGORIES), status: z.enum(["draft", "published"]), image: imageUrl,
   imageAlt: z.string().trim().max(220),
   gallery: z.array(z.object({ url: imageUrl.refine(Boolean, "Une image est nécessaire."), alt: z.string().trim().max(220) }).strict()).max(12),
-  location: z.string().trim().max(140),
+  location: z.string().trim().max(160),
 };
 export const createPostSchema = z.object({
   ...fields, slug: fields.slug.optional(), excerpt: fields.excerpt.default(""), content: fields.content.default(""),
@@ -40,7 +46,7 @@ export const contactSchema = z.object({
   name: z.string().trim().min(2, "Indiquez votre nom.").max(120),
   email: z.string().trim().email("Indiquez une adresse e-mail valide.").max(254),
   phone: z.string().trim().max(40).default(""), service: z.string().trim().min(2, "Choisissez une prestation.").max(120),
-  location: z.string().trim().max(140).default(""),
+  location: z.string().trim().max(160).default(""),
   message: z.string().trim().min(10, "Décrivez votre projet en quelques mots.").max(6000),
   privacy: z.literal(true, { errorMap: () => ({ message: "Veuillez accepter le traitement de votre demande." }) }),
   website: z.string().max(300).default(""),

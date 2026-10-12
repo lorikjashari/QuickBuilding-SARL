@@ -1,0 +1,123 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: posts
+    // Document ID: random UUID
+    // Fields:
+    //   - title: string (required, 3-150)
+    //   - slug: string (required, lowercase slug, 1-160)
+    //   - excerpt: string (required, 0-320)
+    //   - content: string (required, 0-50000)
+    //   - category: string (required, fixed list)
+    //   - status: string (required, draft or published)
+    //   - image: string (required, empty or https URL, max 2000)
+    //   - imageAlt: string (required, 0-220)
+    //   - gallery: list (required, max 12)
+    //   - location: string (required, 0-160)
+    //   - createdAt: timestamp (required, immutable)
+    //   - updatedAt: timestamp (required)
+    //
+    // Collection: contact_messages
+    // Document ID: random UUID
+    // Fields:
+    //   - name: string (required, 2-120)
+    //   - email: string (required, email, max 254)
+    //   - phone: string (required, 0-40)
+    //   - service: string (required, 2-120)
+    //   - location: string (required, 0-160)
+    //   - message: string (required, 10-6000)
+    //   - read: bool (required, false on create)
+    //   - createdAt: timestamp (required, immutable)
+    //
+    // ===============================================================
+
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.token.email == "admin@quickbuilding.ch";
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function validString(field, minLen, maxLen) {
+      return request.resource.data[field] is string
+        && request.resource.data[field].size() >= minLen
+        && request.resource.data[field].size() <= maxLen;
+    }
+
+    function isRecent(time) {
+      return time is timestamp
+        && time > request.time - duration.value(10, 'm')
+        && time <= request.time + duration.value(1, 'm');
+    }
+
+    function validImage(value) {
+      return value is string
+        && value.size() <= 2000
+        && (value.size() == 0 || value.matches("^https://.*"));
+    }
+
+    function isValidPost(data) {
+      return hasOnlyAllowedFields(["title", "slug", "excerpt", "content", "category", "status", "image", "imageAlt", "gallery", "location", "createdAt", "updatedAt"])
+        && validString("title", 3, 150)
+        && validString("slug", 1, 160)
+        && data.slug.matches("^[a-z0-9]+(-[a-z0-9]+)*$")
+        && validString("excerpt", 0, 320)
+        && validString("content", 0, 50000)
+        && data.category in ["Construction", "Rénovation", "Maçonnerie", "Vie de l’entreprise"]
+        && data.status in ["draft", "published"]
+        && validImage(data.image)
+        && validString("imageAlt", 0, 220)
+        && data.gallery is list
+        && data.gallery.size() <= 12
+        && validString("location", 0, 160)
+        && data.createdAt is timestamp
+        && isRecent(data.updatedAt);
+    }
+
+    function isValidContact(data) {
+      return hasOnlyAllowedFields(["name", "email", "phone", "service", "location", "message", "read", "createdAt"])
+        && validString("name", 2, 120)
+        && validString("email", 3, 254)
+        && data.email.matches("^[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}$")
+        && validString("phone", 0, 40)
+        && validString("service", 2, 120)
+        && validString("location", 0, 160)
+        && validString("message", 10, 6000)
+        && data.read is bool
+        && data.createdAt is timestamp;
+    }
+
+    match /posts/{postId} {
+      allow read: if isAdmin() || resource.data.status == "published";
+      allow create: if isAdmin()
+        && isValidPost(request.resource.data)
+        && isRecent(request.resource.data.createdAt);
+      allow update: if isAdmin()
+        && isValidPost(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAdmin();
+    }
+
+    match /contact_messages/{messageId} {
+      allow read: if isAdmin();
+      allow create: if isValidContact(request.resource.data)
+        && request.resource.data.read == false
+        && isRecent(request.resource.data.createdAt);
+      allow update: if isAdmin()
+        && isValidContact(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["read"])
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
