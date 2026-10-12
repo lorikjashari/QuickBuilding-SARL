@@ -16,7 +16,8 @@
     "authorizedDomains": [
       "localhost",
       "quickbuilding.ch",
-      "www.quickbuilding.ch"
+      "www.quickbuilding.ch",
+      "quick-building-sarl.vercel.app"
     ]
   }
 }

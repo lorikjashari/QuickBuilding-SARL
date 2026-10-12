@@ -35,6 +35,13 @@ function loginEmail(value: string) {
   const login = value.trim().toLowerCase();
   return login === ADMIN_LOGIN ? ADMIN_EMAIL : login;
 }
+function actionMessage(error: unknown, fallback: string) {
+  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+  if (code.includes("permission-denied")) return "Action refusée. Déconnectez-vous, reconnectez-vous, puis réessayez.";
+  if (code.includes("unavailable") || code.includes("network-request-failed")) return "Connexion interrompue. Vérifiez votre réseau, puis réessayez.";
+  if (error instanceof Error && error.message && !/Missing or insufficient permissions|FirebaseError/.test(error.message)) return error.message;
+  return fallback;
+}
 function authMessage(error: unknown) {
   const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
   if (code === "auth/invalid-credential" || code === "auth/user-not-found" || code === "auth/wrong-password" || code === "auth/invalid-email") return "Identifiant ou mot de passe incorrect.";
@@ -178,7 +185,7 @@ export default function AdminPage() {
       setPosts(current => [result, ...current.filter(post => post.id !== result.id)]);
       setDraft(result); setOriginal(JSON.stringify(result));
       setNotice(nextStatus === "published" ? "Votre publication est en ligne." : "Votre brouillon est enregistré.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "L’enregistrement a échoué. Votre texte est conservé."); }
+    } catch (reason) { setError(actionMessage(reason, "L’enregistrement a échoué. Votre texte est conservé.")); }
     finally { setBusy(false); }
   };
 
@@ -195,8 +202,21 @@ export default function AdminPage() {
         const url = await uploadImage(file);
         setDraft(current => gallery ? { ...current, gallery: [...current.gallery, { url, alt: "" }] } : { ...current, image: url, imageAlt: "" });
       }
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Le transfert de l’image a échoué."); }
+    } catch (reason) { setError(actionMessage(reason, "Le transfert de l’image a échoué.")); }
     finally { setUploading(false); }
+  };
+
+  const persistDraft = async (next: Post, success: string) => {
+    if (!next.id) { setDraft(next); return; }
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const payload = { title: next.title.trim(), slug: slugify(next.slug || next.title), excerpt: next.excerpt, content: next.content, category: next.category, status: next.status, image: next.image, imageAlt: next.imageAlt, gallery: next.gallery, location: next.location };
+      const result = await storePost(payload, next.id);
+      setPosts(current => [result, ...current.filter(post => post.id !== result.id && post.slug !== result.slug)]);
+      setDraft(result); setOriginal(JSON.stringify(result));
+      setNotice(success);
+    } catch (reason) { setError(actionMessage(reason, "La photo n’a pas pu être retirée.")); }
+    finally { setBusy(false); }
   };
 
   const deletePost = async () => {
@@ -206,7 +226,7 @@ export default function AdminPage() {
       await removePost(deleting.id);
       setPosts(current => current.filter(post => post.id !== deleting.id));
       setDeleting(null); setNotice("La publication a été supprimée.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "La suppression a échoué."); setDeleting(null); }
+    } catch (reason) { setError(actionMessage(reason, "La suppression a échoué.")); setDeleting(null); }
     finally { setBusy(false); }
   };
 
@@ -229,7 +249,7 @@ export default function AdminPage() {
       setSelectedMessage(null); setDeleteMessageConfirm(false); setNotice("La demande a été supprimée.");
     } catch (reason) {
       setSelectedMessage(null); setDeleteMessageConfirm(false);
-      setError(reason instanceof Error ? reason.message : "La suppression de la demande a échoué.");
+      setError(actionMessage(reason, "La suppression de la demande a échoué."));
     } finally { setBusy(false); }
   };
 
@@ -275,9 +295,9 @@ export default function AdminPage() {
         <button className="admin-back" onClick={() => navigate("posts")}><ArrowLeft size={16} /> Toutes les publications</button>
         <div className="admin-page-heading admin-editor-heading"><div><span className="admin-eyebrow">UNE HISTOIRE À PARTAGER</span><h1>{draft.id ? "Peaufiner les détails." : "À vous de raconter."}</h1><p>{dirty ? "Modifications non enregistrées" : draft.id ? `Dernier enregistrement : ${date(draft.updatedAt)}` : "Donnez vie à votre prochain projet."}</p></div><div className="admin-heading-actions"><button className="admin-btn admin-btn-secondary" onClick={() => setPreview(true)}><Eye size={17} /> Aperçu</button><button className="admin-btn admin-btn-primary" disabled={busy || uploading} onClick={() => void savePost("published")}>{busy ? <LoaderCircle size={17} className="admin-spin" /> : <ArrowUpRight size={17} />}{draft.status === "published" ? "Mettre à jour" : "Publier"}</button></div></div>
         <fieldset className="admin-editor-grid" disabled={busy}><div className="admin-editor-main"><section className="admin-panel admin-form-panel"><div className="admin-section-number">01 <span>LE RÉCIT</span></div><label className="admin-field">Titre de la publication <span className="admin-required">*</span><input ref={titleInput} maxLength={150} placeholder="Ex. Une nouvelle vie pour une maison genevoise" value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></label><label className="admin-field">Introduction<textarea rows={3} maxLength={320} placeholder="En quelques mots, ce qui rend ce projet particulier…" value={draft.excerpt} onChange={event => setDraft({ ...draft, excerpt: event.target.value })} /><span className="admin-field-help"><span>Le résumé affiché sur les cartes du journal.</span><span>{draft.excerpt.length}/320</span></span></label><label className="admin-field">Votre texte<textarea className="admin-content-input" rows={13} maxLength={30000} placeholder={"Racontez le projet, les travaux réalisés, les détails dont vous êtes fier…\n\nSéparez vos paragraphes par une ligne vide."} value={draft.content} onChange={event => setDraft({ ...draft, content: event.target.value })} /><span className="admin-field-help">Un texte simple, concret et à votre image.</span></label></section>
-          <section className="admin-panel admin-form-panel"><div className="admin-section-number">02 <span>LA GALERIE</span><small>{draft.gallery.length}/12</small></div><p className="admin-section-description">Montrez les détails, les étapes et le résultat de votre travail.</p><div className="admin-gallery-grid">{draft.gallery.map((photo, index) => <div className="admin-gallery-item" key={`${photo.url}-${index}`}><div><img src={photo.url} alt={photo.alt || `Photo ${index + 1}`} /><button className="admin-image-remove" aria-label={`Retirer la photo ${index + 1}`} disabled={uploading} onClick={() => setDraft({ ...draft, gallery: draft.gallery.filter((_, i) => i !== index) })}><X size={15} /></button></div><input aria-label={`Description de la photo ${index + 1}`} placeholder="Décrivez cette photo…" maxLength={220} value={photo.alt} onChange={event => setDraft({ ...draft, gallery: draft.gallery.map((item, i) => i === index ? { ...item, alt: event.target.value } : item) })} /></div>)}{draft.gallery.length < 12 && <label className={`admin-upload admin-gallery-upload ${uploading ? "admin-upload-busy" : ""}`}><ImagePlus size={25} strokeWidth={1.5} /><strong>Ajouter des photos</strong><span>JPG, PNG, WebP · 8 Mo max.</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={uploading} aria-label="Ajouter des photos à la galerie" onChange={event => { void uploadFiles(event.target.files, true); event.currentTarget.value = ""; }} /></label>}</div></section>
+          <section className="admin-panel admin-form-panel"><div className="admin-section-number">02 <span>LA GALERIE</span><small>{draft.gallery.length}/12</small></div><p className="admin-section-description">Montrez les détails, les étapes et le résultat de votre travail.</p><div className="admin-gallery-grid">{draft.gallery.map((photo, index) => <div className="admin-gallery-item" key={`${photo.url}-${index}`}><div><img src={photo.url} alt={photo.alt || `Photo ${index + 1}`} /><button type="button" className="admin-image-remove" aria-label={`Retirer la photo ${index + 1}`} disabled={uploading || busy} onClick={() => void persistDraft({ ...draft, gallery: draft.gallery.filter((_, i) => i !== index) }, "La photo a été retirée.")}><X size={15} /></button></div><input aria-label={`Description de la photo ${index + 1}`} placeholder="Décrivez cette photo…" maxLength={220} value={photo.alt} onChange={event => setDraft({ ...draft, gallery: draft.gallery.map((item, i) => i === index ? { ...item, alt: event.target.value } : item) })} /></div>)}{draft.gallery.length < 12 && <label className={`admin-upload admin-gallery-upload ${uploading ? "admin-upload-busy" : ""}`}><ImagePlus size={25} strokeWidth={1.5} /><strong>Ajouter des photos</strong><span>JPG, PNG, WebP · 8 Mo max.</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={uploading} aria-label="Ajouter des photos à la galerie" onChange={event => { void uploadFiles(event.target.files, true); event.currentTarget.value = ""; }} /></label>}</div></section>
         </div><aside className="admin-editor-side"><section className="admin-panel admin-form-panel"><div className="admin-panel-inline-title"><h2>Publication</h2><Status value={draft.status} /></div><label className="admin-field">Catégorie<select value={draft.category} onChange={event => setDraft({ ...draft, category: event.target.value as Category })}>{categories.map(item => <option key={item}>{item}</option>)}</select></label><label className="admin-field">Lieu du projet <span className="admin-optional">facultatif</span><input maxLength={100} placeholder="Ex. Genève, Carouge…" value={draft.location} onChange={event => setDraft({ ...draft, location: event.target.value })} /></label><label className="admin-field">Adresse de la publication<input maxLength={150} placeholder={slugify(draft.title) || "mon-nouveau-projet"} value={draft.slug} onChange={event => setDraft({ ...draft, slug: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "") })} /><span className="admin-field-help admin-url-preview">/journal/{draft.slug || slugify(draft.title) || "mon-nouveau-projet"}</span></label><div className="admin-publish-note"><ShieldCheck size={17} /><p>{draft.status === "published" ? "Cette publication est visible sur votre site. Enregistrez les modifications pour la mettre à jour." : "Votre brouillon reste privé jusqu’à sa publication."}</p></div><button className="admin-btn admin-btn-secondary admin-full-width" disabled={busy || uploading} onClick={() => void savePost("draft")}>{busy ? <LoaderCircle size={16} className="admin-spin" /> : <Save size={16} />}{draft.status === "published" ? "Retirer du site et enregistrer" : "Enregistrer le brouillon"}</button></section>
-          <section className="admin-panel admin-form-panel"><h2>Image de couverture</h2><p className="admin-section-description">La première impression de votre projet.</p>{draft.image ? <div className="admin-cover-preview"><img src={draft.image} alt={draft.imageAlt || "Couverture de la publication"} /><button className="admin-image-remove" aria-label="Retirer l’image de couverture" disabled={uploading} onClick={() => setDraft({ ...draft, image: "", imageAlt: "" })}><X size={15} /></button></div> : null}<label className={`admin-upload ${draft.image ? "admin-upload-replace" : ""} ${uploading ? "admin-upload-busy" : ""}`}>{uploading ? <LoaderCircle size={26} className="admin-spin" /> : <Upload size={26} strokeWidth={1.4} />}<strong>{uploading ? "Transfert en cours…" : draft.image ? "Changer l’image" : "Choisir une image"}</strong>{!draft.image && <span>JPG, PNG, WebP · 8 Mo max.</span>}<input type="file" accept="image/jpeg,image/png,image/webp" disabled={uploading} aria-label="Choisir l’image de couverture" onChange={event => { void uploadFiles(event.target.files); event.currentTarget.value = ""; }} /></label>{draft.image && <label className="admin-field admin-image-alt">Description de l’image<textarea rows={2} maxLength={220} placeholder="Ex. Façade rénovée d’une maison à Genève" value={draft.imageAlt} onChange={event => setDraft({ ...draft, imageAlt: event.target.value })} /><span className="admin-field-help">Pour les personnes qui utilisent un lecteur d’écran.</span></label>}</section>
+          <section className="admin-panel admin-form-panel"><h2>Image de couverture</h2><p className="admin-section-description">La première impression de votre projet.</p>{draft.image ? <div className="admin-cover-preview"><img src={draft.image} alt={draft.imageAlt || "Couverture de la publication"} /><button type="button" className="admin-image-remove" aria-label="Retirer l’image de couverture" disabled={uploading || busy} onClick={() => void persistDraft({ ...draft, image: "", imageAlt: "" }, "L’image de couverture a été retirée.")}><X size={15} /></button></div> : null}<label className={`admin-upload ${draft.image ? "admin-upload-replace" : ""} ${uploading ? "admin-upload-busy" : ""}`}>{uploading ? <LoaderCircle size={26} className="admin-spin" /> : <Upload size={26} strokeWidth={1.4} />}<strong>{uploading ? "Transfert en cours…" : draft.image ? "Changer l’image" : "Choisir une image"}</strong>{!draft.image && <span>JPG, PNG, WebP · 8 Mo max.</span>}<input type="file" accept="image/jpeg,image/png,image/webp" disabled={uploading} aria-label="Choisir l’image de couverture" onChange={event => { void uploadFiles(event.target.files); event.currentTarget.value = ""; }} /></label>{draft.image && <label className="admin-field admin-image-alt">Description de l’image<textarea rows={2} maxLength={220} placeholder="Ex. Façade rénovée d’une maison à Genève" value={draft.imageAlt} onChange={event => setDraft({ ...draft, imageAlt: event.target.value })} /><span className="admin-field-help">Pour les personnes qui utilisent un lecteur d’écran.</span></label>}</section>
           <div className="admin-editor-help"><CircleHelp size={19} /><p>Un titre précis, des photos lumineuses et quelques mots sincères. C’est tout ce qu’il faut.</p></div>
         </aside></fieldset>
       </>}

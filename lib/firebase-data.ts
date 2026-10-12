@@ -1,4 +1,4 @@
-import { deleteDoc, doc, setDoc, Timestamp, updateDoc } from "firebase/firestore";
+import { deleteDoc, doc, getDoc, setDoc, Timestamp, updateDoc } from "firebase/firestore";
 import { and, equal, execute, field } from "firebase/firestore/pipelines";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import {
@@ -70,30 +70,42 @@ async function postsQuery(status?: "published") {
   return snapshot.results.flatMap((result) => result.id ? [asPost(result.id, result.data() as Record<string, unknown>)] : []);
 }
 
-function withCompanyPosts(posts: Post[]): Post[] {
+async function hiddenSlugs(): Promise<Set<string>> {
+  try {
+    const snapshot = await execute(database().pipeline().collection("post_hides"));
+    return new Set(snapshot.results.flatMap((result) => result.id ? [result.id] : []));
+  } catch {
+    return new Set();
+  }
+}
+
+function withCompanyPosts(posts: Post[], hidden: Set<string>): Post[] {
   const slugs = new Set(posts.map((post) => post.slug));
-  return [...posts, ...companyPosts.filter((post) => !slugs.has(post.slug))].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return [...posts, ...companyPosts.filter((post) => !slugs.has(post.slug) && !hidden.has(post.slug))].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function listPublishedPosts(): Promise<Post[]> {
+  const hidden = await hiddenSlugs();
   try {
-    return withCompanyPosts(await postsQuery("published"));
+    return withCompanyPosts(await postsQuery("published"), hidden);
   } catch {
-    return companyPosts;
+    return companyPosts.filter((post) => !hidden.has(post.slug));
   }
 }
 
 export async function listAllPosts(): Promise<Post[]> {
+  const hidden = await hiddenSlugs();
   try {
-    return withCompanyPosts(await postsQuery());
+    return withCompanyPosts(await postsQuery(), hidden);
   } catch {
-    return companyPosts;
+    return companyPosts.filter((post) => !hidden.has(post.slug));
   }
 }
 
 export async function getPublishedPost(slug: string): Promise<Post | null> {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 160) return null;
-  const local = companyPosts.find((post) => post.slug === slug) ?? null;
+  const hidden = await hiddenSlugs();
+  const local = hidden.has(slug) ? null : companyPosts.find((post) => post.slug === slug) ?? null;
   try {
     const snapshot = await execute(database().pipeline().collection("posts").where(and(
       equal(field("slug"), slug),
@@ -131,6 +143,11 @@ export async function savePost(input: unknown, existingId = ""): Promise<Post> {
   };
   const reference = doc(database(), "posts", id);
   if (existingId) {
+    const currentDoc = await getDoc(reference);
+    if (!currentDoc.exists()) {
+      await setDoc(reference, fields);
+      return asPost(id, { ...fields });
+    }
     const { createdAt, ...changes } = fields;
     void createdAt;
     await updateDoc(reference, changes);
@@ -142,7 +159,9 @@ export async function savePost(input: unknown, existingId = ""): Promise<Post> {
 }
 
 export async function removePost(id: string): Promise<void> {
+  const bundled = companyPosts.find((post) => post.id === id);
   await deleteDoc(doc(database(), "posts", id));
+  if (bundled) await setDoc(doc(database(), "post_hides", bundled.slug), { hiddenAt: Timestamp.now() });
 }
 
 export async function uploadImage(file: File): Promise<string> {

@@ -185,7 +185,7 @@
 .admin-upload-replace strong{font-size:10px}
 .admin-cover-preview{position:relative;aspect-ratio:1.5}
 .admin-cover-preview>img{width:100%;height:100%;object-fit:cover;border-radius:4px}
-.admin-image-remove{display:flex;align-items:center;justify-content:center;position:absolute;right:8px;top:8px;width:25px;height:25px;border:0;border-radius:50%;background:#fffef5ed;box-shadow:0 1px 5px #0002;color:#727272}
+.admin-image-remove{display:flex;align-items:center;justify-content:center;position:absolute;right:8px;top:8px;z-index:2;width:25px;height:25px;border:0;border-radius:50%;background:#fffef5ed;box-shadow:0 1px 5px #0002;color:#727272}
 .admin-image-remove:hover{background:#fff;color:#b45749}
 .admin-image-alt{margin-top:20px}
 .admin-editor-help{display:flex;gap:10px;color:#9d9d9d;padding:0 6px}
